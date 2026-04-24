@@ -1,0 +1,40 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-protocol_one_env"
+version = "0.1.0"
+description = "Protocol One — OpenEnv environment for reverse-engineering an undocumented HTTP API"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core[core]>=0.2.3",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.24.0",
+    "pydantic>=2.5.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+]
+llm-smoke = [
+    "anthropic>=0.34.0",
+    "openai>=1.30.0",
+]
+
+[project.scripts]
+server = "protocol_one_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["protocol_one_env", "protocol_one_env.server"]
+package-dir = { "protocol_one_env" = ".", "protocol_one_env.server" = "server" }

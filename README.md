@@ -191,11 +191,55 @@ protocol_one_env/
     └── test_designer.py                  # 15 tests
 ```
 
+## Training pipeline (Rejection-Sampling SFT)
+
+We pivoted away from multi-turn GRPO after discovering that `TRL 0.22.2`'s
+`GRPOTrainer` silently ignores `environment_factory` — every rollout scored 0
+because the model never saw tool schemas or interacted with the env. The
+official Hackathon Help Guide §3 + FAQ #16/#45 prescribe SFT-first when the
+base model can't reliably produce successful rollouts; that's the recipe here.
+
+```
+data generation:    MockProtocolServer  ──┐
+                    + Designer (mutations)│
+                    + scripted prober     ├─► (transcript, belief_graph) pairs
+                    + observation-grounded│       ↓
+                      belief interpreter  │   matcher.score
+                                          ──┘     ↓
+                                              filter (≥ threshold)
+                                                  ↓
+                                            data/sft.jsonl
+                                                  ↓
+training:           Qwen 2.5 + Unsloth LoRA  +  TRL SFTTrainer  +  RFTEvalCallback
+                                                  ↓
+                    held-out reward curve  +  baseline-vs-trained  +  mutation eval
+                                                  ↓
+                                            notebooks/figures/*.png
+```
+
+Generate the SFT dataset:
+
+```bash
+python -m scripts.build_sft_dataset --episodes 1500 --threshold 0.40 \
+    --mutation-prob 0.25 --out data/sft.jsonl
+```
+
+Train end-to-end on Colab T4 (free) or A100/L4 (HF compute) — the cell
+sequence is in `notebooks/colab_cells_sft.py`. Toggle the `MODEL_SIZE`
+preset in Cell 7 between `"1.5B"`, `"3B"`, and `"7B"`.
+
+Files added for this pipeline:
+- `scripts/build_sft_dataset.py` — diverse prober + observation interpreter
+- `notebooks/sft_eval.py` — end-to-end model→matcher eval helper
+- `notebooks/sft_callbacks.py` — `RFTEvalCallback` for live eval-during-train
+- `notebooks/plotting.py` — dark-theme plots matching the docs viz palette
+- `notebooks/colab_cells_sft.py` — the canonical Colab cell sequence
+
 ## Status
 
 - [x] Phase 0 — scaffold via `openenv init`, venv, deps
 - [x] Phase 1 — spec (18 endpoints), matcher (6 components, 29 tests pass), mock server (45 tests pass)
 - [x] Phase 2 — OpenEnv wrapper, reward wiring, concurrent sessions, smoke test reward ~0.46
 - [x] Phase 4 designer code — 5 mutation types, 15 tests, disabled by default
-- [ ] Phase 3 — GRPO training (hackathon day 1)
+- [x] Phase 3 — Rejection-Sampling SFT pipeline (replaces broken multi-turn GRPO)
 - [ ] Phase 5 — viz, video, pitch (hackathon day 2)

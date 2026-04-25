@@ -1,62 +1,53 @@
-"""Colab cell sequence for Protocol One — Rejection-Sampling SFT training.
+"""Colab cell sequence for Protocol One — Rejection-Sampling SFT (vanilla path).
 
-This is the working pivot from broken multi-turn GRPO. We build a clean
-(probe_transcript -> belief_graph_json) dataset from live env rollouts,
-then SFT Qwen via Unsloth + TRL's SFTTrainer (which, unlike GRPOTrainer's
-environment_factory, actually does what it claims).
+This is the v2 rewrite after Unsloth+bitsandbytes proved unworkable on the
+current Colab T4 image. Three separate bnb versions hit three independent
+failures in succession (CUDA-13 lib missing, GLIBCXX too old, triton.ops
+removed). The reliable path on T4 is plain transformers + peft + TRL in
+fp16 — slower than 4-bit Unsloth but actually runs.
 
-Why SFT-with-rejection-sampling is defensible:
-    - The official Hackathon Help Guide §3 prescribes SFT-first when the
-      base model can't reliably produce successful rollouts (FAQ #16, #45).
-    - The env is in the data-generation loop; the matcher is the verifier.
-      That satisfies the "training loop connects to your environment"
-      criterion -- just not via gradient backprop through the env.
-    - Llama 2 used the same recipe (rejection-sampling fine-tuning, RFT).
-      Academically known as STaR / expert iteration.
+Numbers for Qwen 2.5-1.5B-Instruct on T4 (15 GB):
+    Model fp16          ~ 3.0 GB
+    LoRA adapters (r=16) ~30 MB
+    Optimizer state     ~150 MB
+    Activations + grads ~5-8 GB  (with gradient checkpointing)
+    Headroom            ~3-5 GB
+Total fits comfortably. ~2-3x slower than Unsloth 4-bit but bulletproof.
 
-Cells are Jupytext-style. Copy each block between `# %%` markers into its
-own Colab cell, in order.
+For larger models (3B / 7B) on HF compute (A100/H100), the same script
+runs unchanged — just flip `MODEL_SIZE` in Cell 5. fp16 of a 7B model is
+~14 GB which fits A100 40GB easily.
 
-Hardware presets at the top of Cell 7:
-    T4 free  : MODEL_SIZE = "1.5B"  (Qwen 2.5-1.5B-Instruct, 4-bit)
-    A100/L4  : MODEL_SIZE = "3B"    (Qwen 2.5-3B-Instruct,   4-bit)
-    Larger   : MODEL_SIZE = "7B"    (Qwen 2.5-7B-Instruct,   4-bit) -- needs HF compute
+Pipeline recap:
+    build_sft_dataset.py     transcripts -> belief graphs (matcher-filtered JSONL)
+    SFTTrainer (vanilla TRL) supervised fine-tune Qwen on (transcript, belief)
+    RFTEvalCallback          live env eval every N steps -> the climbing curve
+    plotting.py              dark-themed plots into notebooks/figures/
+
+Cells are Jupytext-style. Copy each block between `# %%` markers into one
+Colab cell, in order. 17 cells total.
 """
 
 # %% [Cell 1] -- Verify GPU
 !nvidia-smi
 
 
-# %% [Cell 2] -- Canonical pinned install (same pins as the GRPO notebook;
-# T4-tested by Unsloth and known-stable. Don't drift.)
-import os
-!pip install --upgrade -qqq uv
-
-if "COLAB_" not in "".join(os.environ.keys()):
-    !pip install unsloth
-else:
-    try:
-        import numpy, PIL
-        _numpy = f"numpy=={numpy.__version__}"
-        _pil = f"pillow=={PIL.__version__}"
-    except Exception:
-        _numpy, _pil = "numpy", "pillow"
-    !uv pip install -qqq --upgrade {_numpy} {_pil} torchvision bitsandbytes xformers unsloth
-!uv pip install -qqq matplotlib
-!uv pip install transformers==4.56.2
-!uv pip install --no-deps trl==0.22.2
-print("OK install set installed")
+# %% [Cell 2] -- Minimal install (NO Unsloth, NO bitsandbytes, NO torchcodec)
+# These four packages are the entire training stack for the vanilla path.
+# Pinning trl==0.22.2 + transformers==4.56.2 because they were validated
+# against this codebase. Other versions may also work; don't drift unless
+# you have a reason.
+!pip install --upgrade -qqq pip
+!pip install -q transformers==4.56.2 peft==0.13.2 accelerate==1.0.1 datasets==3.0.1 matplotlib
+!pip install -q --no-deps trl==0.22.2
+print("OK vanilla install set installed (transformers + peft + trl + accelerate)")
 
 
-# %% [Cell 3] -- Remove torchcodec (ABI mismatch)
-!pip uninstall -y torchcodec
-print("OK torchcodec removed")
-
-
-# %% [Cell 4] -- Verify versions
+# %% [Cell 3] -- Verify versions
 import importlib.metadata as md
 for pkg, want in [("transformers", "4.56.2"), ("trl", "0.22.2"),
-                  ("unsloth", "any"), ("matplotlib", "any")]:
+                  ("peft", "0.13.2"), ("accelerate", "1.0.1"),
+                  ("datasets", "3.0.1"), ("matplotlib", "any")]:
     try:
         got = md.version(pkg)
     except Exception:
@@ -64,7 +55,7 @@ for pkg, want in [("transformers", "4.56.2"), ("trl", "0.22.2"),
     print(f"{pkg:14} = {got:12} (want {want})")
 
 
-# %% [Cell 5] -- Clone repo + install
+# %% [Cell 4] -- Clone repo + install editable
 %cd /content
 !rm -rf /content/repo
 !git clone https://github.com/suhaniawasthi10/Protocol-RE.git /content/repo
@@ -73,76 +64,101 @@ for pkg, want in [("transformers", "4.56.2"), ("trl", "0.22.2"),
 print("OK repo cloned + installed editable")
 
 
-# %% [Cell 6] -- Build the SFT dataset (~3-5 min for 1500 episodes)
-# Mix base spec + Designer mutations so the model sees diverse transcripts.
-# Threshold 0.40 keeps the top half of trajectories; calibrate up/down based
-# on the score distribution printed at the end of this cell.
-!python -m scripts.build_sft_dataset \
-    --episodes 1500 \
-    --threshold 0.40 \
-    --mutation-prob 0.25 \
-    --max-probes 12 \
-    --out data/sft.jsonl
+# %% [Cell 5] -- Build the SFT dataset (~3-5 min). Skip if data/sft.jsonl is
+# already in the repo (it is, if you pushed it from your laptop).
+import os
+if os.path.exists("/content/repo/data/sft.jsonl"):
+    n = sum(1 for _ in open("/content/repo/data/sft.jsonl"))
+    print(f"OK using existing data/sft.jsonl ({n} examples) -- skipping build")
+else:
+    !python -m scripts.build_sft_dataset \
+        --episodes 1500 --threshold 0.40 --mutation-prob 0.25 \
+        --max-probes 12 --out data/sft.jsonl
 
 
-# %% [Cell 7] -- Imports + hardware-aware config
-import os, sys, json
+# %% [Cell 6] -- Imports + hardware-aware config
+import os, sys, json, torch
 sys.path.insert(0, "/content/repo")
 
 # === Hardware preset =========================================================
-# Pick ONE: "1.5B" for T4 free, "3B" for L4/A100, "7B" for HF compute.
+# T4 free  : MODEL_SIZE = "1.5B"   ~3 GB fp16, fits 15 GB easily
+# L4/A100  : MODEL_SIZE = "3B"     ~6 GB fp16, fits 24 GB
+# A100/H100: MODEL_SIZE = "7B"    ~14 GB fp16, needs 40 GB+
 MODEL_SIZE = "1.5B"
 # =============================================================================
 
 _PRESETS = {
-    "1.5B": dict(model="unsloth/Qwen2.5-1.5B-Instruct", per_device_bs=2,
+    "1.5B": dict(model="Qwen/Qwen2.5-1.5B-Instruct", per_device_bs=2,
                  grad_accum=4, max_seq_len=4096, lr=2e-4),
-    "3B":   dict(model="unsloth/Qwen2.5-3B-Instruct",   per_device_bs=2,
+    "3B":   dict(model="Qwen/Qwen2.5-3B-Instruct",   per_device_bs=2,
                  grad_accum=4, max_seq_len=4096, lr=1.5e-4),
-    "7B":   dict(model="unsloth/Qwen2.5-7B-Instruct",   per_device_bs=1,
+    "7B":   dict(model="Qwen/Qwen2.5-7B-Instruct",   per_device_bs=1,
                  grad_accum=8, max_seq_len=4096, lr=1e-4),
 }
 CFG = _PRESETS[MODEL_SIZE]
 
-SMOKE_STEPS  = 30          # pre-flight: confirm loss is going down
-FULL_STEPS   = 200         # full run -- ~10-25 min on T4
-EVAL_EVERY   = 25          # how often the live env-eval callback fires
-EVAL_N_EPISODES = 6        # episodes per eval pass (keep small -- generation is slow)
-RUN_ID       = f"sft_{MODEL_SIZE.lower()}"
+SMOKE_STEPS     = 30        # pre-flight: confirm loss is going down
+FULL_STEPS      = 200       # full run -- ~20-30 min on T4 for 1.5B
+EVAL_EVERY      = 25        # how often the live env-eval callback fires
+EVAL_N_EPISODES = 6         # episodes per eval pass
+RUN_ID          = f"sft_{MODEL_SIZE.lower()}"
 
 print(f"OK preset = {MODEL_SIZE} | model = {CFG['model']}")
 
 
-# %% [Cell 8] -- Load model + LoRA via Unsloth (4-bit)
-from unsloth import FastLanguageModel
+# %% [Cell 7] -- Load model + LoRA (vanilla transformers, fp16)
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import LoraConfig, get_peft_model
 
-model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name      = CFG["model"],
-    max_seq_length  = CFG["max_seq_len"],
-    load_in_4bit    = True,
-    dtype           = None,
+tokenizer = AutoTokenizer.from_pretrained(CFG["model"])
+if tokenizer.pad_token is None:
+    tokenizer.pad_token = tokenizer.eos_token
+
+model = AutoModelForCausalLM.from_pretrained(
+    CFG["model"],
+    torch_dtype = torch.float16,
+    device_map  = "cuda",
 )
-model = FastLanguageModel.get_peft_model(
-    model, r = 16,
+# Gradient checkpointing slashes activation memory (~3x) for SFT.
+# enable_input_require_grads is needed for grad-ckpt + LoRA to coexist
+# (the input embedding outputs need requires_grad=True so gradients flow).
+model.gradient_checkpointing_enable()
+model.enable_input_require_grads()
+
+lora_config = LoraConfig(
+    r              = 16,
+    lora_alpha     = 32,
+    lora_dropout   = 0.0,
+    bias           = "none",
+    task_type      = "CAUSAL_LM",
     target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                       "gate_proj", "up_proj", "down_proj"],
-    lora_alpha    = 32,
-    lora_dropout  = 0.0,
-    bias          = "none",
-    use_gradient_checkpointing = "unsloth",
-    random_state  = 42,
 )
-print("OK model + LoRA ready")
+model = get_peft_model(model, lora_config)
+model.print_trainable_parameters()
+print("OK model + LoRA ready (vanilla transformers, fp16)")
 
 
-# %% [Cell 9] -- Load dataset, configure SFTTrainer
+# %% [Cell 8] -- Load dataset, pre-format with chat template, configure SFTTrainer
 from datasets import load_dataset
 from trl import SFTConfig, SFTTrainer
 from notebooks.sft_callbacks import RFTEvalCallback
 
 ds = load_dataset("json", data_files="/content/repo/data/sft.jsonl", split="train")
-print(f"OK loaded {len(ds)} examples; columns = {ds.column_names}")
-print(f"   sample message roles: {[m['role'] for m in ds[0]['messages']]}")
+print(f"OK loaded {len(ds)} examples")
+
+# Pre-apply Qwen's chat template so SFTTrainer reads a flat 'text' column.
+# This is more portable across TRL versions than relying on auto-detection
+# of the messages field.
+def to_text(example):
+    return {
+        "text": tokenizer.apply_chat_template(
+            example["messages"], tokenize=False, add_generation_prompt=False,
+        )
+    }
+
+ds = ds.map(to_text, remove_columns=[c for c in ds.column_names if c != "text"])
+print(f"OK formatted; sample text length = {len(ds[0]['text'])} chars")
 
 sft_args = SFTConfig(
     output_dir                  = f"/content/repo/checkpoints/{RUN_ID}",
@@ -161,6 +177,7 @@ sft_args = SFTConfig(
     bf16                        = False,
     seed                        = 42,
     packing                     = False,
+    dataset_text_field          = "text",
 )
 
 eval_cb = RFTEvalCallback(
@@ -183,49 +200,49 @@ trainer = SFTTrainer(
 print("OK SFTTrainer ready")
 
 
-# %% [Cell 10] -- BASELINE eval (BEFORE training) -- the "before" curve point
+# %% [Cell 9] -- BASELINE eval (BEFORE training) -- the "before" point
 from notebooks.sft_eval import evaluate
-FastLanguageModel.for_inference(model)
+
 print("Running baseline eval (8 episodes, base spec)...")
+model.eval()
 baseline_summary = evaluate(model, tokenizer, n_episodes=8, mutation_prob=0.0,
                             seed=999, max_new_tokens=1500, progress=True)
 print(f"\nBaseline mean reward: {baseline_summary.mean_reward:.3f}  "
       f"parse_rate: {baseline_summary.parse_rate:.2f}")
-FastLanguageModel.for_training(model)
+model.train()
 
 
-# %% [Cell 11] -- Smoke train (~3-5 min). Inspect the loss before going further.
+# %% [Cell 10] -- Smoke train (~3-5 min). Inspect the loss before going further.
 trainer.train()
 
 
-# %% [Cell 12] -- Full train (~15-25 min on T4 with 1.5B)
-import gc, torch
+# %% [Cell 11] -- Full train (~20-30 min on T4 with 1.5B fp16)
+import gc
 gc.collect(); torch.cuda.empty_cache()
 sft_args.max_steps = FULL_STEPS
 trainer.args = sft_args
 trainer.train(resume_from_checkpoint=False)
 
 
-# %% [Cell 13] -- TRAINED eval (after training) -- base spec
-FastLanguageModel.for_inference(model)
+# %% [Cell 12] -- TRAINED eval (after training) -- base spec
 print("Running trained eval (12 episodes, base spec)...")
+model.eval()
 trained_summary = evaluate(model, tokenizer, n_episodes=12, mutation_prob=0.0,
                            seed=999, max_new_tokens=1500, progress=True)
 print(f"\nTrained mean reward: {trained_summary.mean_reward:.3f}  "
       f"parse_rate: {trained_summary.parse_rate:.2f}")
 
 
-# %% [Cell 14] -- TRAINED eval -- with mutations (generalization test)
+# %% [Cell 13] -- TRAINED eval -- with mutations (generalization test)
 print("Running mutation-generalization eval (12 episodes, mutation_prob=0.5)...")
 mut_summary = evaluate(model, tokenizer, n_episodes=12, mutation_prob=0.5,
                        seed=2024, max_new_tokens=1500, progress=True)
 print(f"\nTrained mean reward (mutated): {mut_summary.mean_reward:.3f}  "
       f"parse_rate: {mut_summary.parse_rate:.2f}")
-FastLanguageModel.for_training(model)
+model.train()
 
 
-# %% [Cell 15] -- Generate all the eye-pleasing plots
-import os
+# %% [Cell 14] -- Generate all the eye-pleasing plots
 from notebooks import plotting as P
 
 os.makedirs("/content/repo/notebooks/figures", exist_ok=True)
@@ -249,8 +266,8 @@ print(P.plot_dashboard(trainer.state.log_history, trainer.state.log_history,
 print("OK all figures written to notebooks/figures/")
 
 
-# %% [Cell 16] -- Save numeric artifacts (used by the README and pitch deck)
-import json, time
+# %% [Cell 15] -- Save numeric artifacts (used by the README and pitch deck)
+import time
 results = {
     "run_id":   RUN_ID,
     "model":    CFG["model"],
@@ -278,19 +295,16 @@ print(f"OK wrote {out}")
 print(json.dumps(results, indent=2))
 
 
+# %% [Cell 16] -- Save LoRA adapter for the inference demo
+# Adapter is ~30 MB; merge into base model at inference time via merge_and_unload().
+adapter_dir = f"/content/repo/checkpoints/{RUN_ID}_lora"
+model.save_pretrained(adapter_dir)
+tokenizer.save_pretrained(adapter_dir)
+print(f"OK LoRA adapter + tokenizer saved to {adapter_dir}")
+
+
 # %% [Cell 17] -- Commit + push artifacts to GitHub
 !cd /content/repo && git config user.email "you@example.com" && git config user.name "Suhani"
 !cd /content/repo && git add notebooks/figures data/sft.jsonl notebooks/sft_eval.py notebooks/sft_callbacks.py notebooks/plotting.py notebooks/colab_cells_sft.py scripts/build_sft_dataset.py
-!cd /content/repo && git commit -m "RFT pipeline: dataset, eval, plots, and run artifacts"
+!cd /content/repo && git commit -m "RFT pipeline (vanilla fp16): dataset, eval, plots, run artifacts"
 !cd /content/repo && git push origin main
-
-
-# %% [Cell 18] -- (optional) Save the merged LoRA weights for the inference demo
-# The pitch demo loads this checkpoint to drive the LIVE env via the OpenEnv
-# WebSocket -- different code path from training, but uses the same model.
-model.save_pretrained_merged(
-    f"/content/repo/checkpoints/{RUN_ID}_merged",
-    tokenizer,
-    save_method = "merged_4bit_forced",   # safe path per Unsloth QLoRA warning
-)
-print("OK merged checkpoint saved")

@@ -21,6 +21,7 @@ model from reward-hacking by spamming update_model.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 from uuid import uuid4
 
@@ -39,7 +40,7 @@ from .protocol_server import MockProtocolServer, create_server
 from .spec import INITIAL_TOKEN, SPEC
 
 
-MAX_PROBES_PER_EPISODE = 80
+MAX_PROBES_PER_EPISODE = int(os.environ.get("MAX_PROBES_PER_EPISODE", "12"))
 RESPONSE_TRUNCATE_CHARS = 2000
 
 

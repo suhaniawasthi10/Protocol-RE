@@ -33,7 +33,16 @@ import random
 import uuid
 from typing import Any
 
-from protocol_one_env import ProtocolOneEnv, ProtocolOneAction
+try:
+    # Preferred: the package-installed import path (`pip install -e .`).
+    from protocol_one_env import ProtocolOneEnv, ProtocolOneAction
+except ImportError:
+    # Fallback: bare-module imports from the repo root. This handles
+    # environments where the editable install of a `package-dir = {"x": "."}`
+    # layout doesn't register the package on sys.path (notably in Colab),
+    # but the repo root itself is on sys.path.
+    from client import ProtocolOneEnv  # type: ignore
+    from models import ProtocolOneAction  # type: ignore
 
 
 ENV_URL = os.environ.get("PROTOCOL_ONE_ENV_URL", "http://127.0.0.1:8000")
@@ -79,6 +88,17 @@ class ProtocolOneToolEnv:
         if self._closed:
             return
         self._closed = True
+        # Auto-finalize if the rollout ended without an explicit finalize() call
+        # (e.g., the model emitted EOS early or hit max_completion_length before
+        # calling the finalize tool). The env scores whatever belief graph it
+        # accumulated — a tiny but non-zero reward beats no reward at all,
+        # because GRPO needs a relative signal within each generation group.
+        if not self.done:
+            try:
+                result = self._env.step(ProtocolOneAction(tool="finalize", args={}))
+                self._on_terminal(result)
+            except Exception:
+                pass
         try:
             self._env.__exit__(None, None, None)
         except Exception:

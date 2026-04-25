@@ -1,12 +1,13 @@
 """Reward function: score a belief graph against the hidden spec.
 
-Pure, deterministic, no I/O. Six components weighted to total in [0, 1]:
-  - 0.30 endpoints discovered (method+path matched)
-  - 0.20 endpoint details correct (auth, params, responses)
+Pure, deterministic, no I/O. Five additive components plus a capped penalty,
+weighted to total in [0, 1]:
+  - 0.35 endpoints discovered (method+path matched)
+  - 0.25 endpoint details correct (auth, params, responses)
   - 0.15 resource fields correct
   - 0.10 state-machine transitions correct
-  - 0.10 auth model correct
-  - 0.15 false-claim penalty (capped, subtracted)
+  - 0.15 auth model correct (type + scopes observed)
+  - up to 0.15 false-claim penalty (subtracted, capped at PENALTY_CAP)
 
 Forgiving of malformed input — returns a zero-ish MatcherResult rather than
 raising. The agent is allowed to emit garbage; we just don't reward it.

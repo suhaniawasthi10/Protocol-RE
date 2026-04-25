@@ -139,7 +139,10 @@ class ProtocolOneEnvironment(Environment):
             belief_graph_stats=self._stats(),
             done=False,
             reward=None,
-            metadata={"episode_id": self._state.episode_id},
+            metadata={
+                "episode_id": self._state.episode_id,
+                "mutation_log": self.designer.last_mutation_log,
+            },
         )
 
     def step(self, action: ProtocolOneAction, **kwargs: Any) -> ProtocolOneObservation:  # type: ignore[override]
@@ -310,7 +313,16 @@ class ProtocolOneEnvironment(Environment):
             "auth_scopes_observed": len(scopes) if isinstance(scopes, list) else 0,
         }
 
-    def _obs(self, text: str, done: bool, reward: float | None = None) -> ProtocolOneObservation:
+    def _obs(
+        self,
+        text: str,
+        done: bool,
+        reward: float | None = None,
+        extra_metadata: dict | None = None,
+    ) -> ProtocolOneObservation:
+        metadata: dict[str, Any] = {"episode_id": self._state.episode_id}
+        if extra_metadata:
+            metadata.update(extra_metadata)
         return ProtocolOneObservation(
             text=text,
             probes_used=self.probes_used,
@@ -318,7 +330,7 @@ class ProtocolOneEnvironment(Environment):
             belief_graph_stats=self._stats(),
             done=done,
             reward=reward,
-            metadata={"episode_id": self._state.episode_id},
+            metadata=metadata,
         )
 
     def _end_episode(self, reason: str) -> ProtocolOneObservation:
@@ -332,4 +344,15 @@ class ProtocolOneEnvironment(Environment):
             f"/{result.endpoints_total}, false_claims={result.false_claims})\n"
             f"Breakdown: {breakdown_str}"
         )
-        return self._obs(text, done=True, reward=result.total)
+        return self._obs(
+            text,
+            done=True,
+            reward=result.total,
+            extra_metadata={
+                "breakdown": result.breakdown,
+                "endpoints_found": result.endpoints_found,
+                "endpoints_total": result.endpoints_total,
+                "false_claims": result.false_claims,
+                "mutation_log": self.designer.last_mutation_log,
+            },
+        )

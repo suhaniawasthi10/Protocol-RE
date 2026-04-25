@@ -26,3 +26,9 @@ dist/
 # Secrets (defensive; none expected in this repo)
 .env
 .env.local
+
+# Hackathon reference (local                                                      
+  only)
+PPT-DOC.md
+Themes-judging-criteria.md
+[External]*.md

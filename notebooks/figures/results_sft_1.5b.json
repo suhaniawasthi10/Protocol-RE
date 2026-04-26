@@ -1,0 +1,51 @@
+{
+  "run_id": "sft_1.5b",
+  "model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "timestamp": "2026-04-26 04:42:25",
+  "config": {
+    "smoke_steps": 30,
+    "full_steps": 200,
+    "lr": 0.0002,
+    "batch": 2,
+    "grad_accum": 4
+  },
+  "baseline": {
+    "mean_reward": 0.0,
+    "std_reward": 0.0,
+    "parse_rate": 0.88,
+    "components": {
+      "endpoints_discovered": 0.0,
+      "endpoint_details": 0.0,
+      "resources": 0.0,
+      "state_machines": 0.0,
+      "auth": 0.0,
+      "penalty": 0.0
+    }
+  },
+  "trained": {
+    "mean_reward": 0.6798611111111111,
+    "std_reward": 0.058246975318421955,
+    "parse_rate": 1.0,
+    "components": {
+      "endpoint_details": 1.0,
+      "resources": 0.9583333333333334,
+      "state_machines": 0.9583333333333334,
+      "penalty": 0.0,
+      "endpoints_discovered": 0.2222222222222222,
+      "auth": 0.75
+    },
+    "by_variant": {
+      "base": 0.6798611111111111
+    }
+  },
+  "trained_mutated": {
+    "mean_reward": 0.6954575163398693,
+    "std_reward": 0.026021448219495272,
+    "by_variant": {
+      "base": 0.7072592592592591,
+      "deprecate_endpoint": 0.6932058823529411,
+      "shift_state_transition": 0.6717777777777777,
+      "rename_field": 0.6573333333333333
+    }
+  }
+}

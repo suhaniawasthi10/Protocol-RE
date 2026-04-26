@@ -29,9 +29,10 @@ to test generalization.
 | Run | Mean reward | Parse rate | Notes |
 |---|---|---|---|
 | **Baseline** (untrained Qwen 2.5-1.5B) | **0.000** | 0.88 | Emits valid JSON, wrong schema |
-| **SFT trained** (1.5B, 100 steps) | **0.680** | **1.00** | 3 of 6 components hit perfect 1.0 |
-| **Trained, unseen mutations** | **0.695** | **1.00** | Generalizes — actually slightly higher |
-| **SFT trained (7B)** | **0.708** | **1.00** | Same plateau as 1.5B — confirms ceiling is data-bound, not capacity |
+| **SFT trained** (1.5B, 200 steps) | **0.680** ± 0.06 | **1.00** | `endpoint_details` hits perfect 1.0; resources & state-machines ~0.96 |
+| **Trained (1.5B), unseen mutations** | **0.695** ± 0.03 | **1.00** | Generalizes — actually slightly higher than base |
+| **SFT trained (7B)** | **0.662** ± 0.07 | **1.00** | Statistically tied with 1.5B — **capacity is not the bottleneck** |
+| **Trained (7B), unseen mutations** | **0.694** ± 0.03 | **1.00** | Same plateau on mutated specs |
 
 A clean 0 → 0.68 jump on a 6-component verifier-graded reward, with **zero hallucinated endpoints** and **perfect schema compliance** by the trained model.
 
@@ -310,26 +311,41 @@ protocol_one_env/
 ## Scaling: 1.5B vs 7B
 
 We trained at two model sizes with **identical training data, identical pipeline**.
-Both converge to the same ~0.70 plateau:
+Both converge to the same ~0.66–0.70 plateau, **within one standard deviation
+of each other**:
 
 | Component | 1.5B | 7B |
 |---|---|---|
-| **Total reward** | **0.680** | **0.708** |
+| **Total reward (base eval)** | **0.680 ± 0.06** | **0.662 ± 0.07** |
+| **Total reward (mutated mix)** | **0.695 ± 0.03** | **0.694 ± 0.03** |
 | `endpoint_details` | 1.00 | 1.00 |
-| `resources` | 0.96 | 1.00 |
-| `state_machines` | 0.96 | 1.00 |
-| `auth` | 0.75 | 0.76 |
-| `endpoints_discovered` | 0.22 | 0.27 |
+| `resources` | 0.96 | 0.94 |
+| `state_machines` | 0.96 | 0.94 |
+| `auth` | 0.75 | 0.72 |
+| `endpoints_discovered` | 0.22 | 0.20 |
 | `penalty` | 0.00 | 0.00 |
 
-The shared plateau **isolates the bottleneck**: it's training-data coverage
-(each transcript exposes ~5 of 18 endpoints), not model capacity. 7B closes
-three components to perfect 1.0 (vs 1.5B's 0.96), but the total stays bound
-by the data ceiling. Lifting the ceiling by combining multiple probe transcripts
-per training example would let 7B diverge more substantially. That's our
-future-work path.
+A 4.7× parameter increase yields **no measurable gain**. This is not a negative
+result — it is the cleanest possible isolation of the bottleneck: training-data
+coverage. Each rollout transcript exposes ~5 of 18 endpoints, so the matcher's
+`endpoints_discovered` component is structurally capped at ~0.28 regardless of
+how well the model uses what it sees. Both model sizes saturate that cap and
+sit on it.
 
-![7B baseline vs trained](notebooks/figures/baseline_vs_trained_7b.png)
+The fix is on the **data side**, not the model side: combining multiple probe
+transcripts per training example lifts the cap, at which point we expect 7B to
+finally diverge from 1.5B. That's our future-work path.
+
+7B mutation breakdown (n=51 across 3 variants — `rename_field` re-eval
+pending, omitted to avoid mixing apples and oranges with 1.5B's 4-variant table):
+
+| Spec variant | Mean reward |
+|---|---|
+| base | 0.701 |
+| `deprecate_endpoint` | 0.676 |
+| `shift_state_transition` | 0.672 |
+
+![7B training dashboard — loss, reward curve, per-component bars, mutation generalization](notebooks/figures/dashboard_7b.png)
 
 ## Future work
 

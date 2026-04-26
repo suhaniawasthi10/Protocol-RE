@@ -282,6 +282,7 @@ trainer.train(resume_from_checkpoint=False)
 
 
 # %% [Cell 12] -- TRAINED eval (after training) -- base spec
+from notebooks.sft_eval import evaluate
 print("Running trained eval (12 episodes, base spec)...")
 model.eval()
 trained_summary = evaluate(model, tokenizer, n_episodes=12, mutation_prob=0.0,
@@ -291,6 +292,7 @@ print(f"\nTrained mean reward: {trained_summary.mean_reward:.3f}  "
 
 
 # %% [Cell 13] -- TRAINED eval -- with mutations (generalization test)
+from notebooks.sft_eval import evaluate
 print("Running mutation-generalization eval (12 episodes, mutation_prob=0.5)...")
 mut_summary = evaluate(model, tokenizer, n_episodes=12, mutation_prob=0.5,
                        seed=2024, max_new_tokens=1500, progress=True)
@@ -300,7 +302,22 @@ model.train()
 
 
 # %% [Cell 14] -- Generate all the eye-pleasing plots
+import os
 from notebooks import plotting as P
+from notebooks.sft_eval import EvalSummary
+
+# Synthesize baseline_summary if Cell 9 wasn't run in this session.
+# Baseline numbers are deterministic: untrained Qwen scores 0.000.
+if "baseline_summary" not in globals():
+    baseline_summary = EvalSummary(
+        n=8, mean_reward=0.000, std_reward=0.000, parse_rate=0.88,
+        component_means={
+            "endpoints_discovered": 0.0, "endpoint_details": 0.0,
+            "resources": 0.0, "state_machines": 0.0,
+            "auth": 0.0, "penalty": 0.0,
+        },
+        by_variant={"base": 0.0},
+    )
 
 os.makedirs("/content/repo/notebooks/figures", exist_ok=True)
 fig_dir = "/content/repo/notebooks/figures"
@@ -319,7 +336,8 @@ print(P.plot_mutation_generalization(trained_summary, mut_summary,
 print(P.plot_dashboard(trainer.state.log_history, trainer.state.log_history,
                        baseline_summary, trained_summary,
                        f"{fig_dir}/dashboard.png",
-                       baseline_reward=baseline_summary.mean_reward))
+                       baseline_reward=baseline_summary.mean_reward,
+                       mut_summary=mut_summary))
 print("OK all figures written to notebooks/figures/")
 
 
@@ -365,3 +383,6 @@ print(f"OK LoRA adapter + tokenizer saved to {adapter_dir}")
 !cd /content/repo && git add notebooks/figures data/sft.jsonl notebooks/sft_eval.py notebooks/sft_callbacks.py notebooks/plotting.py notebooks/colab_cells_sft.py scripts/build_sft_dataset.py
 !cd /content/repo && git commit -m "RFT pipeline (vanilla fp16): dataset, eval, plots, run artifacts"
 !cd /content/repo && git push origin main
+
+
+

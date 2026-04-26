@@ -294,8 +294,15 @@ def plot_dashboard(
     trained_summary: Any,
     out_path: str,
     baseline_reward: float | None = None,
+    mut_summary: Any = None,
 ) -> str:
-    """One eye-pleasing 2x2 hero image for the README."""
+    """One eye-pleasing 2x2 hero image for the README.
+
+    If ``mut_summary`` is provided, the bottom-right panel shows trained
+    base-spec vs trained mutated-spec reward across each mutation type --
+    the proper generalization story. If not provided, falls back to the
+    (less informative) baseline-vs-trained-by-variant view.
+    """
     apply_dark_style()
     fig = plt.figure(figsize=(13, 8.2))
     gs = fig.add_gridspec(2, 2, hspace=0.32, wspace=0.22)
@@ -343,17 +350,28 @@ def plot_dashboard(
 
     # (1,1) Per-variant generalization
     ax4 = fig.add_subplot(gs[1, 1])
-    variants = sorted(set(baseline_summary.by_variant) | set(trained_summary.by_variant))
-    base_v = [baseline_summary.by_variant.get(v, 0.0) for v in variants]
-    train_v = [trained_summary.by_variant.get(v, 0.0) for v in variants]
-    x = np.arange(len(variants)); w = 0.38
-    ax4.bar(x - w / 2, base_v, w, color=PALETTE["baseline"], label="baseline")
-    ax4.bar(x + w / 2, train_v, w, color=PALETTE["accent"], label="trained")
+    if mut_summary is not None:
+        # Real generalization story: trained on base vs trained on mutations.
+        variants = sorted(set(trained_summary.by_variant) | set(mut_summary.by_variant))
+        train_v = [trained_summary.by_variant.get(v, np.nan) for v in variants]
+        mut_v = [mut_summary.by_variant.get(v, np.nan) for v in variants]
+        x = np.arange(len(variants)); w = 0.38
+        ax4.bar(x - w / 2, train_v, w, color=PALETTE["accent"], label="base-spec eval")
+        ax4.bar(x + w / 2, mut_v, w, color=PALETTE["partial"], label="mutated-spec eval")
+        ax4.set_title("Generalization to held-out mutations")
+    else:
+        # Fallback: baseline vs trained-by-variant (mostly empty; only base).
+        variants = sorted(set(baseline_summary.by_variant) | set(trained_summary.by_variant))
+        base_v = [baseline_summary.by_variant.get(v, 0.0) for v in variants]
+        train_v = [trained_summary.by_variant.get(v, 0.0) for v in variants]
+        x = np.arange(len(variants)); w = 0.38
+        ax4.bar(x - w / 2, base_v, w, color=PALETTE["baseline"], label="baseline")
+        ax4.bar(x + w / 2, train_v, w, color=PALETTE["accent"], label="trained")
+        ax4.set_title("Generalization across spec variants")
     ax4.set_xticks(x)
     ax4.set_xticklabels([v.replace("_", "\n") for v in variants], fontsize=8)
     ax4.set_ylabel("Mean reward")
     ax4.set_ylim(0, 1.0)
-    ax4.set_title("Generalization across spec variants")
     ax4.legend(loc="upper right")
 
     fig.suptitle("Protocol One — SFT training results",

@@ -38,15 +38,18 @@ Colab cell, in order. 17 cells total.
 # against this codebase. Other versions may also work; don't drift unless
 # you have a reason.
 !pip install --upgrade -qqq pip
-!pip install -q transformers==4.56.2 peft==0.13.2 accelerate==1.0.1 datasets==3.0.1 matplotlib
+!pip install -q transformers==4.56.2 peft==0.13.2 "accelerate>=1.4.0" datasets==3.0.1 matplotlib
 !pip install -q --no-deps trl==0.22.2
+# accelerate must be >= 1.4 because transformers 4.56.2 calls
+# Accelerator.unwrap_model(keep_torch_compile=False), and that kwarg was
+# added in accelerate 1.4 (NOT 1.1 as I originally pinned).
 print("OK vanilla install set installed (transformers + peft + trl + accelerate)")
 
 
 # %% [Cell 3] -- Verify versions
 import importlib.metadata as md
 for pkg, want in [("transformers", "4.56.2"), ("trl", "0.22.2"),
-                  ("peft", "0.13.2"), ("accelerate", "1.0.1"),
+                  ("peft", "0.13.2"), ("accelerate", ">=1.4.0"),
                   ("datasets", "3.0.1"), ("matplotlib", "any")]:
     try:
         got = md.version(pkg)
@@ -164,7 +167,7 @@ sft_args = SFTConfig(
     output_dir                  = f"/content/repo/checkpoints/{RUN_ID}",
     per_device_train_batch_size = CFG["per_device_bs"],
     gradient_accumulation_steps = CFG["grad_accum"],
-    max_seq_length              = CFG["max_seq_len"],
+    max_length                  = CFG["max_seq_len"],   # was max_seq_length pre-TRL-0.18
     learning_rate               = CFG["lr"],
     lr_scheduler_type           = "cosine",
     warmup_ratio                = 0.05,
@@ -217,10 +220,64 @@ trainer.train()
 
 
 # %% [Cell 11] -- Full train (~20-30 min on T4 with 1.5B fp16)
-import gc
+# Self-contained: rebuilds sft_args + trainer from scratch so it's safe to
+# run even if a partial kernel restart wiped Cell 6 / Cell 8 state. Requires
+# only `model` and `tokenizer` in the namespace (from Cell 7).
+import gc, torch, sys
+sys.path.insert(0, "/content/repo")
+
+try:
+    _ = model; _ = tokenizer
+except NameError:
+    raise RuntimeError("model/tokenizer missing -- re-run Cell 7 first.")
+
+from accelerate import Accelerator
+if not getattr(Accelerator, "_protocol_one_patched", False):
+    _orig_unwrap = Accelerator.unwrap_model
+    def _patched_unwrap(self, model, *args, **kwargs):
+        kwargs.pop('keep_torch_compile', None)
+        return _orig_unwrap(self, model, *args, **kwargs)
+    Accelerator.unwrap_model = _patched_unwrap
+    Accelerator._protocol_one_patched = True
+
+from datasets import load_dataset
+from trl import SFTConfig, SFTTrainer
+from notebooks.sft_callbacks import RFTEvalCallback
+
+ds = load_dataset("json", data_files="/content/repo/data/sft.jsonl", split="train")
+def to_text(example):
+    return {"text": tokenizer.apply_chat_template(
+        example["messages"], tokenize=False, add_generation_prompt=False)}
+ds = ds.map(to_text, remove_columns=[c for c in ds.column_names if c != "text"])
+
+RUN_ID, FULL_STEPS, EVAL_EVERY, EVAL_N_EPISODES = "sft_1.5b", 200, 25, 6
+sft_args = SFTConfig(
+    output_dir = f"/content/repo/checkpoints/{RUN_ID}",
+    per_device_train_batch_size = 2,
+    gradient_accumulation_steps = 4,
+    max_length = 4096,
+    learning_rate = 2e-4,
+    lr_scheduler_type = "cosine",
+    warmup_ratio = 0.05,
+    max_steps = FULL_STEPS,
+    logging_steps = 1,
+    save_steps = max(50, FULL_STEPS),
+    save_total_limit = 2,
+    report_to = "none",
+    fp16 = True, bf16 = False, seed = 42,
+    packing = False, dataset_text_field = "text",
+)
+eval_cb = RFTEvalCallback(
+    eval_every_steps=EVAL_EVERY, n_episodes=EVAL_N_EPISODES,
+    mutation_prob=0.0, seed=1234, max_new_tokens=1500, max_probes=12,
+)
+eval_cb.bind(model, tokenizer)
+trainer = SFTTrainer(
+    model=model, train_dataset=ds, args=sft_args,
+    processing_class=tokenizer, callbacks=[eval_cb],
+)
+
 gc.collect(); torch.cuda.empty_cache()
-sft_args.max_steps = FULL_STEPS
-trainer.args = sft_args
 trainer.train(resume_from_checkpoint=False)
 
 

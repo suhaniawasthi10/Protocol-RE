@@ -1,0 +1,49 @@
+{
+  "run_id": "sft_7b",
+  "model": "Qwen/Qwen2.5-7B-Instruct",
+  "timestamp": "2026-04-26 10:01:20",
+  "config": {
+    "full_steps": 200,
+    "lr": 0.0001,
+    "batch": 1,
+    "grad_accum": 8
+  },
+  "baseline": {
+    "mean_reward": 0.0,
+    "parse_rate": 0.88,
+    "components": {
+      "endpoints_discovered": 0.0,
+      "endpoint_details": 0.0,
+      "resources": 0.0,
+      "state_machines": 0.0,
+      "auth": 0.0,
+      "penalty": 0.0
+    }
+  },
+  "trained": {
+    "mean_reward": 0.662111111111111,
+    "std_reward": 0.06750352071293747,
+    "parse_rate": 1.0,
+    "components": {
+      "auth": 0.715,
+      "resources": 0.9375,
+      "state_machines": 0.9375,
+      "penalty": 0.0,
+      "endpoints_discovered": 0.2013888888888889,
+      "endpoint_details": 1.0
+    },
+    "by_variant": {
+      "base": 0.662111111111111
+    }
+  },
+  "trained_mutated": {
+    "mean_reward": 0.6942066993464051,
+    "std_reward": 0.030314654315007676,
+    "parse_rate": 1.0,
+    "by_variant": {
+      "base": 0.7010185185185184,
+      "deprecate_endpoint": 0.6757647058823529,
+      "shift_state_transition": 0.6717777777777777
+    }
+  }
+}

@@ -31,14 +31,15 @@ to test generalization.
 | **Baseline** (untrained Qwen 2.5-1.5B) | **0.000** | 0.88 | Emits valid JSON, wrong schema |
 | **SFT trained** (1.5B, 100 steps) | **0.680** | **1.00** | 3 of 6 components hit perfect 1.0 |
 | **Trained, unseen mutations** | **0.695** | **1.00** | Generalizes — actually slightly higher |
-| 🔜 SFT trained (7B) | TBD | TBD | Training in progress on HF compute |
+| **SFT trained (7B)** | **0.708** | **1.00** | Same plateau as 1.5B — confirms ceiling is data-bound, not capacity |
 
 A clean 0 → 0.68 jump on a 6-component verifier-graded reward, with **zero hallucinated endpoints** and **perfect schema compliance** by the trained model.
 
 **🔗 Live env**: https://huggingface.co/spaces/suhaniawasthi/protocol_one_env  
+**📝 Blog (full writeup)**: [`Blog.md`](Blog.md)  
 **📓 Training notebook**: [`notebooks/colab_cells_sft.py`](notebooks/colab_cells_sft.py) (Colab T4, free)  
 **🎨 All training plots**: [`notebooks/figures/`](notebooks/figures/)  
-**📊 Numerical results**: [`notebooks/figures/results_sft_1.5b.json`](notebooks/figures/results_sft_1.5b.json)
+**📊 Numerical results**: [`notebooks/figures/results_sft_1.5b.json`](notebooks/figures/results_sft_1.5b.json) · [`results_sft_7b.json`](notebooks/figures/results_sft_7b.json)
 
 ---
 
@@ -306,6 +307,30 @@ protocol_one_env/
 └── pyproject.toml
 ```
 
+## Scaling: 1.5B vs 7B
+
+We trained at two model sizes with **identical training data, identical pipeline**.
+Both converge to the same ~0.70 plateau:
+
+| Component | 1.5B | 7B |
+|---|---|---|
+| **Total reward** | **0.680** | **0.708** |
+| `endpoint_details` | 1.00 | 1.00 |
+| `resources` | 0.96 | 1.00 |
+| `state_machines` | 0.96 | 1.00 |
+| `auth` | 0.75 | 0.76 |
+| `endpoints_discovered` | 0.22 | 0.27 |
+| `penalty` | 0.00 | 0.00 |
+
+The shared plateau **isolates the bottleneck**: it's training-data coverage
+(each transcript exposes ~5 of 18 endpoints), not model capacity. 7B closes
+three components to perfect 1.0 (vs 1.5B's 0.96), but the total stays bound
+by the data ceiling. Lifting the ceiling by combining multiple probe transcripts
+per training example would let 7B diverge more substantially. That's our
+future-work path.
+
+![7B baseline vs trained](notebooks/figures/baseline_vs_trained_7b.png)
+
 ## Future work
 
 - **Multi-turn GRPO with SFT-warmed model.** The trained model now reliably emits JSON, so GRPO has signal to optimize. SFT → GRPO is the FAQ #16 prescribed recipe.
@@ -323,9 +348,8 @@ protocol_one_env/
 ## Links
 
 - 🌐 **HF Space (live env)**: https://huggingface.co/spaces/suhaniawasthi/protocol_one_env
-- 📦 **GitHub**: https://github.com/suhaniawasthi10/Protocol-RE
-- 🎥 **Demo video**: _(link to be added)_
-- 📝 **Mini-blog / slide deck**: _(link to be added)_
+- 📝 **Blog (writeup)**: [`Blog.md`](Blog.md) — full project narrative, lessons, ablations
+- 📦 **GitHub mirror**: https://github.com/suhaniawasthi10/Protocol-RE
 
 ---
 
@@ -337,4 +361,5 @@ protocol_one_env/
 - [x] Phase 3 — Rejection-Sampling SFT pipeline (replaces broken multi-turn GRPO)
 - [x] Phase 4 designer code — 5 mutation types, off by default
 - [x] Phase 5 — visualizations, README, deployment to HF Space
-- [ ] Phase 6 — pitch / video (in progress)
+- [x] Phase 6 — 7B scaling experiment (data-ceiling confirmed)
+- [x] Phase 7 — Blog writeup (`Blog.md`)

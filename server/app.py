@@ -43,16 +43,16 @@ app = create_app(
 )
 
 
-def main(host: str = "0.0.0.0", port: int = 8000) -> None:
-    import uvicorn
-    uvicorn.run(app, host=host, port=port)
+def main() -> None:
+    """Entry point for `python -m server.app` and the `server` console script."""
+    import argparse, os, uvicorn
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
+    parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
+    args, _ = parser.parse_known_args()
+    uvicorn.run(app, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--host", default="0.0.0.0")
-    args = parser.parse_args()
-    main(host=args.host, port=args.port)
+    main()

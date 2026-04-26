@@ -17,12 +17,14 @@ tags:
 
 > **Training agents to reverse-engineer undocumented HTTP APIs by probing them.**
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1M7EE0477jyS8bLUWhPzoSck7kzE8MgLu?usp=sharing) &nbsp; **One-click reproduce on a free Colab T4.**
+
 An OpenEnv-compliant RL environment where an LLM agent must build a structured belief
 graph of an unknown API — endpoints, auth scopes, resource shapes, state machines —
 purely from HTTP probes. A scripted designer mutates the protocol between episodes
 to test generalization.
 
-![Dashboard — baseline vs trained, mutation generalization, training curves](notebooks/figures/dashboard.png)
+![Baseline vs trained — 0.000 → 0.680 reward across six independent components, perfect parse rate](notebooks/figures/baseline_vs_trained.png)
 
 ## TL;DR
 
@@ -38,13 +40,15 @@ A clean 0 → 0.68 jump on a 6-component verifier-graded reward, with **zero hal
 
 **🔗 Live env**: https://huggingface.co/spaces/suhaniawasthi/protocol_one_env  
 **📝 Blog (full writeup)**: [`Blog.md`](Blog.md)  
-**📓 Training notebook**: [`notebooks/colab_cells_sft.py`](notebooks/colab_cells_sft.py) (Colab T4, free)  
+**📓 Training notebook (judges run this)**: [`colab_cells_sft.ipynb`](notebooks/colab_cells_sft.ipynb) ([open in Colab](https://colab.research.google.com/drive/1M7EE0477jyS8bLUWhPzoSck7kzE8MgLu?usp=sharing)) — clean, no outputs, runs end-to-end on a free T4  
+**🧾 Actual 1.5B training log**: [`training_run_1.5b.ipynb`](notebooks/training_run_1.5b.ipynb) — executed Colab notebook with all cell outputs preserved (eval-callback values at steps 25/50/75, embedded plot images)  
+**🛠 7B trainer cell** (HF Space A100): [`notebooks/cell3_7b_train.py`](notebooks/cell3_7b_train.py) — replaces Cell 11 when `MODEL_SIZE="7B"`  
 **🎨 All training plots**: [`notebooks/figures/`](notebooks/figures/)  
 **📊 Numerical results**: [`notebooks/figures/results_sft_1.5b.json`](notebooks/figures/results_sft_1.5b.json) · [`results_sft_7b.json`](notebooks/figures/results_sft_7b.json)
 
 ---
 
-## The problem
+# The Problem
 
 Every integration engineer has lost a week to a vendor's vague API docs. Every
 security researcher has fuzzed a black-box service. Every SRE has chased a webhook
@@ -105,9 +109,7 @@ repair drift, not just memorize.
 
 ### Reward components, baseline vs trained
 
-![Baseline vs trained — per-component bars with deltas](notebooks/figures/baseline_vs_trained.png)
-
-The trained model achieves:
+(See hero plot at top.) The trained model achieves:
 - **endpoint_details: 1.00** (perfect — when an endpoint is named, all details are right)
 - **resources: 0.96**, **state_machines: 0.96** (near-perfect)
 - **auth: 0.75**
@@ -214,19 +216,42 @@ The env is reachable at `http://localhost:8000`. OpenEnv endpoints: `/reset`,
 
 ```bash
 python scripts/verify_phase1.py    # spec + matcher + server consistency
-python scripts/verify_phase2.py    # OpenEnv wrapper end-to-end
+python scripts/verify_phase2.py    # OpePnEnv wrapper end-to-end
 pytest tests/                      # 85 tests
 ```
 
 ### Reproduce the training (Colab T4, free)
 
-Open `notebooks/colab_cells_sft.py` — Jupytext-style, paste each cell into Colab.
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1M7EE0477jyS8bLUWhPzoSck7kzE8MgLu?usp=sharing)
+
+One click → opens in Colab → `Runtime → Run all`. ~30–40 min on a free T4
+including baseline + trained eval and all plots. The notebook is also
+available as a Jupytext `.py` (`notebooks/colab_cells_sft.py`) for diff-friendly
+review.
 
 For a bigger model, change Cell 6:
 
 ```python
 MODEL_SIZE = "3B"   # or "7B" — needs paid GPU on HF compute
 ```
+
+### Reproducing the 7B run (HF Space A100)
+
+The 7B run was executed on a Hugging Face Space JupyterLab on A100. The recipe:
+
+1. Same Cells 1–7 of `colab_cells_sft.ipynb` with `MODEL_SIZE="7B"` in Cell 6.
+   On HF Space JupyterLab the repo lives at `/home/user/Protocol-RE` instead of `/content/repo` — adjust the paths in Cells 4 / 5 / 8 accordingly.
+2. **Replace Cell 11 (the full-train cell) with [`notebooks/cell3_7b_train.py`](notebooks/cell3_7b_train.py).**
+   It uses the `CFG[...]` preset values (`per_device_bs=1, grad_accum=8, lr=1e-4`)
+   instead of Cell 11's hardcoded 1.5B hyperparams, and includes the same
+   `Accelerator.unwrap_model` monkey-patch in case the installed `accelerate`
+   version predates `keep_torch_compile`.
+3. Cells 12–15 (eval, plot, save) are unchanged. The plot file paths in Cell 14
+   were manually suffixed with `_7b` so the 7B figures don't overwrite the 1.5B
+   set — see `notebooks/figures/*_7b.png`.
+
+Wall-clock: ~70 min on A100 large for 200 steps. Output artifacts:
+`notebooks/figures/results_sft_7b.json` + six `*_7b.png` files.
 
 ---
 
@@ -295,11 +320,14 @@ protocol_one_env/
 │   ├── verify_phase2.py                # OpenEnv wrapper end-to-end
 │   └── smoke_test_scripted.py          # No-API-key baseline (~0.46)
 ├── notebooks/
-│   ├── colab_cells_sft.py              # Canonical Colab cell sequence
+│   ├── colab_cells_sft.ipynb           # ▶ One-click Colab notebook (judges run this)
+│   ├── colab_cells_sft.py              # Jupytext source for the .ipynb (diff-friendly)
+│   ├── training_run_1.5b.ipynb         # Actual 1.5B Colab run with all outputs (training log)
+│   ├── cell3_7b_train.py               # 7B trainer-cell override (HF Space A100)
 │   ├── sft_eval.py                     # Model → matcher eval helper
 │   ├── sft_callbacks.py                # RFTEvalCallback (live eval during train)
 │   ├── plotting.py                     # Dark-theme plots
-│   └── figures/                        # 6 PNGs + results JSON
+│   └── figures/                        # 12 PNGs (1.5B + 7B) + results JSON
 ├── data/
 │   └── sft.jsonl                       # 1500 filtered RFT examples
 ├── tests/                              # 85 tests
@@ -366,16 +394,3 @@ pending, omitted to avoid mixing apples and oranges with 1.5B's 4-variant table)
 - 🌐 **HF Space (live env)**: https://huggingface.co/spaces/suhaniawasthi/protocol_one_env
 - 📝 **Blog (writeup)**: [`Blog.md`](Blog.md) — full project narrative, lessons, ablations
 - 📦 **GitHub mirror**: https://github.com/suhaniawasthi10/Protocol-RE
-
----
-
-## Status
-
-- [x] Phase 0 — scaffold via `openenv init`, venv, deps
-- [x] Phase 1 — spec (18 endpoints), matcher (6 components, 25+ tests), mock server (45 tests)
-- [x] Phase 2 — OpenEnv wrapper, reward wiring, concurrent sessions
-- [x] Phase 3 — Rejection-Sampling SFT pipeline (replaces broken multi-turn GRPO)
-- [x] Phase 4 designer code — 5 mutation types, off by default
-- [x] Phase 5 — visualizations, README, deployment to HF Space
-- [x] Phase 6 — 7B scaling experiment (data-ceiling confirmed)
-- [x] Phase 7 — Blog writeup (`Blog.md`)
